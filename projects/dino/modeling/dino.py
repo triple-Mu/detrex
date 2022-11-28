@@ -55,23 +55,23 @@ class DINO(nn.Module):
     """
 
     def __init__(
-        self,
-        backbone: nn.Module,
-        position_embedding: nn.Module,
-        neck: nn.Module,
-        transformer: nn.Module,
-        embed_dim: int,
-        num_classes: int,
-        num_queries: int,
-        criterion: nn.Module,
-        pixel_mean: List[float] = [123.675, 116.280, 103.530],
-        pixel_std: List[float] = [58.395, 57.120, 57.375],
-        aux_loss: bool = True,
-        select_box_nums_for_evaluation: int = 300,
-        device="cuda",
-        dn_number: int = 100,
-        label_noise_ratio: float = 0.2,
-        box_noise_scale: float = 1.0,
+            self,
+            backbone: nn.Module,
+            position_embedding: nn.Module,
+            neck: nn.Module,
+            transformer: nn.Module,
+            embed_dim: int,
+            num_classes: int,
+            num_queries: int,
+            criterion: nn.Module,
+            pixel_mean: List[float] = [123.675, 116.280, 103.530],
+            pixel_std: List[float] = [58.395, 57.120, 57.375],
+            aux_loss: bool = True,
+            select_box_nums_for_evaluation: int = 300,
+            device="cuda",
+            dn_number: int = 100,
+            label_noise_ratio: float = 0.2,
+            box_noise_scale: float = 1.0,
     ):
         super().__init__()
         # define backbone and position embedding module
@@ -162,7 +162,13 @@ class DINO(nn.Module):
                 - dict["aux_outputs"]: Optional, only returned when auxilary losses are activated. It is a list of
                             dictionnaries containing the two above keys for each decoder layer.
         """
-        images = self.preprocess_image(batched_inputs)
+        if torch.onnx.is_in_onnx_export():
+            _, height, width = batched_inputs.shape
+            images = ImageList.from_tensors([batched_inputs])
+            batched_inputs = [{'height': height, 'width': width}]
+
+        else:
+            images = self.preprocess_image(batched_inputs)
 
         if self.training:
             batch_size, _, H, W = images.tensor.shape
@@ -277,12 +283,21 @@ class DINO(nn.Module):
             results = self.inference(box_cls, box_pred, images.image_sizes)
             processed_results = []
             for results_per_image, input_per_image, image_size in zip(
-                results, batched_inputs, images.image_sizes
+                    results, batched_inputs, images.image_sizes
             ):
                 height = input_per_image.get("height", image_size[0])
                 width = input_per_image.get("width", image_size[1])
                 r = detector_postprocess(results_per_image, height, width)
                 processed_results.append({"instances": r})
+
+            if torch.onnx.is_in_onnx_export():
+                trace_outputs = []
+                for result in processed_results:
+                    instances = result['instances']
+                    boxes, scores, labels = instances._fields.values()
+                    boxes = boxes.tensor
+                    trace_outputs.append([boxes, scores, labels])
+                processed_results = trace_outputs
             return processed_results
 
     @torch.jit.unused
@@ -296,15 +311,15 @@ class DINO(nn.Module):
         ]
 
     def prepare_for_cdn(
-        self,
-        targets,
-        dn_number,
-        label_noise_ratio,
-        box_noise_scale,
-        num_queries,
-        num_classes,
-        hidden_dim,
-        label_enc,
+            self,
+            targets,
+            dn_number,
+            label_noise_ratio,
+            box_noise_scale,
+            num_queries,
+            num_classes,
+            hidden_dim,
+            label_enc,
     ):
         """
         A major difference of DINO from DN-DETR is that the author process pattern embedding pattern embedding
@@ -377,7 +392,7 @@ class DINO(nn.Module):
             diff[:, 2:] = known_bboxs[:, 2:] / 2
 
             rand_sign = (
-                torch.randint_like(known_bboxs, low=0, high=2, dtype=torch.float32) * 2.0 - 1.0
+                    torch.randint_like(known_bboxs, low=0, high=2, dtype=torch.float32) * 2.0 - 1.0
             )
             rand_part = torch.rand_like(known_bboxs)
             rand_part[negative_idx] += 1.0
@@ -417,20 +432,20 @@ class DINO(nn.Module):
         for i in range(dn_number):
             if i == 0:
                 attn_mask[
-                    single_padding * 2 * i : single_padding * 2 * (i + 1),
-                    single_padding * 2 * (i + 1) : pad_size,
+                single_padding * 2 * i: single_padding * 2 * (i + 1),
+                single_padding * 2 * (i + 1): pad_size,
                 ] = True
             if i == dn_number - 1:
                 attn_mask[
-                    single_padding * 2 * i : single_padding * 2 * (i + 1), : single_padding * i * 2
+                single_padding * 2 * i: single_padding * 2 * (i + 1), : single_padding * i * 2
                 ] = True
             else:
                 attn_mask[
-                    single_padding * 2 * i : single_padding * 2 * (i + 1),
-                    single_padding * 2 * (i + 1) : pad_size,
+                single_padding * 2 * i: single_padding * 2 * (i + 1),
+                single_padding * 2 * (i + 1): pad_size,
                 ] = True
                 attn_mask[
-                    single_padding * 2 * i : single_padding * 2 * (i + 1), : single_padding * 2 * i
+                single_padding * 2 * i: single_padding * 2 * (i + 1), : single_padding * 2 * i
                 ] = True
 
         dn_meta = {
@@ -491,7 +506,7 @@ class DINO(nn.Module):
         # scores, labels = F.softmax(box_cls, dim=-1)[:, :, :-1].max(-1)
 
         for i, (scores_per_image, labels_per_image, box_pred_per_image, image_size) in enumerate(
-            zip(scores, labels, boxes, image_sizes)
+                zip(scores, labels, boxes, image_sizes)
         ):
             result = Instances(image_size)
             result.pred_boxes = Boxes(box_cxcywh_to_xyxy(box_pred_per_image))
